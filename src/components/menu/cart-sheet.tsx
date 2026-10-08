@@ -25,6 +25,13 @@ export function CartSheet({ open, onOpenChange }: { open: boolean; onOpenChange:
   function handlePlaceOrder() {
     setError(null);
     startTransition(async () => {
+      const storageKey = `thaliq_idempotency:${params.restaurant}:${params.branch}:${params.table ?? "general"}`;
+      let idempotencyKey = sessionStorage.getItem(storageKey);
+      if (!idempotencyKey) {
+        idempotencyKey = crypto.randomUUID();
+        sessionStorage.setItem(storageKey, idempotencyKey);
+      }
+
       const result = await placeOrder({
         restaurantSlug: params.restaurant,
         branchSlug: params.branch,
@@ -39,6 +46,7 @@ export function CartSheet({ open, onOpenChange }: { open: boolean; onOpenChange:
         couponCode: couponCode.trim() || undefined,
         customerName: customerName.trim() || undefined,
         customerPhone: customerPhone.trim() || undefined,
+        idempotencyKey,
       });
 
       if ("error" in result) {
@@ -46,6 +54,7 @@ export function CartSheet({ open, onOpenChange }: { open: boolean; onOpenChange:
         return;
       }
 
+      sessionStorage.removeItem(storageKey);
       clear();
       onOpenChange(false);
       if (params.table) {

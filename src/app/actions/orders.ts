@@ -18,6 +18,7 @@ export type PlaceOrderInput = {
   couponCode?: string;
   customerName?: string;
   customerPhone?: string;
+  idempotencyKey?: string;
 };
 
 export type PlaceOrderResult = { orderId: string; orderNumber: number } | { error: string };
@@ -37,6 +38,19 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
   }
 
   const admin = createAdminClient();
+
+  // Idempotency: if the same key was already used, return the existing order
+  // instead of creating a duplicate (double-tap, retry, page refresh).
+  if (input.idempotencyKey) {
+    const { data: existing } = await admin
+      .from("orders")
+      .select("id, order_number")
+      .eq("idempotency_key", input.idempotencyKey)
+      .maybeSingle();
+    if (existing) {
+      return { orderId: existing.id, orderNumber: existing.order_number };
+    }
+  }
 
   const { data: restaurant } = await admin
     .from("restaurants")
@@ -64,11 +78,14 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
   if (input.tableId) {
     const { data: table } = await admin
       .from("restaurant_tables")
-      .select("id")
+      .select("id, status")
       .eq("id", input.tableId)
       .eq("branch_id", branch.id)
       .maybeSingle();
     if (!table) return { error: "Table not found." };
+    if (["cleaning", "payment_pending", "paid"].includes(table.status)) {
+      return { error: "This table is not accepting orders right now." };
+    }
     tableId = table.id;
   }
 
@@ -202,24 +219,46 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
   let tableSessionId: string | null = null;
   if (tableId) {
-    const { data: openSession } = await admin
+    const { data: activeSession } = await admin
       .from("table_sessions")
-      .select("id")
+      .select("id, status")
       .eq("table_id", tableId)
       .in("status", ["open", "bill_requested"])
       .order("opened_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    tableSessionId = openSession?.id ?? null;
-
-    if (!tableSessionId) {
-      const { data: newSession } = await admin
+    if (activeSession) {
+      tableSessionId = activeSession.id;
+    } else {
+      // Try to create — may fail if a concurrent request created one
+      // (unique partial index enforces one active session per table).
+      const { data: newSession, error: sessionError } = await admin
         .from("table_sessions")
         .insert({ table_id: tableId })
         .select("id")
         .single();
-      tableSessionId = newSession?.id ?? null;
+
+      if (newSession) {
+        tableSessionId = newSession.id;
+      } else if (sessionError) {
+        // Retry with a broader filter to find the session another request
+        // created. If it is payment_pending or paid, reject the order.
+        const { data: retrySession } = await admin
+          .from("table_sessions")
+          .select("id, status")
+          .eq("table_id", tableId)
+          .in("status", ["open", "bill_requested", "payment_pending", "paid"])
+          .order("opened_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (retrySession && ["open", "bill_requested"].includes(retrySession.status)) {
+          tableSessionId = retrySession.id;
+        } else if (retrySession) {
+          return { error: "This table is not accepting orders right now." };
+        }
+      }
     }
   }
 
@@ -236,6 +275,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       tax_amount: taxAmount,
       service_charge_amount: serviceChargeAmount,
       total_amount: totalAmount,
+      idempotency_key: input.idempotencyKey ?? null,
     })
     .select("id, order_number")
     .single();

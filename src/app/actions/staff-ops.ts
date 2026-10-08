@@ -103,12 +103,16 @@ export async function markBillPaid(billId: string, method: "cash" | "upi" | "car
 
   const { data: bill } = await admin
     .from("bills")
-    .select("id, total_amount, restaurant_id, table_session_id")
+    .select("id, total_amount, restaurant_id, table_session_id, status")
     .eq("id", billId)
     .eq("restaurant_id", session.restaurantId)
     .single();
 
   if (!bill) return;
+
+  // Idempotency: if the bill is already paid, do not duplicate the payment
+  // or close the session again (duplicate webhook, double-tap).
+  if (bill.status === "paid") return;
 
   await admin
     .from("bills")
@@ -148,25 +152,39 @@ export async function markBillPaid(billId: string, method: "cash" | "upi" | "car
 
     const { data: tableSession } = await admin
       .from("table_sessions")
-      .select("table_id")
+      .select("id, table_id, status")
       .eq("id", bill.table_session_id)
       .maybeSingle();
 
-    await admin
-      .from("table_sessions")
-      .update({ status: "closed", closed_at: new Date().toISOString() })
-      .eq("id", bill.table_session_id);
-
-    // Free the table for the next guests.
-    if (tableSession?.table_id) {
+    if (tableSession && tableSession.status !== "closed") {
+      // Transition: bill_requested (or payment_pending) -> paid -> closed.
+      // The DB trigger validates each step.
+      if (tableSession.status !== "paid") {
+        await admin
+          .from("table_sessions")
+          .update({ status: "paid" })
+          .eq("id", bill.table_session_id);
+      }
       await admin
-        .from("restaurant_tables")
-        .update({ status: "cleaning" })
-        .eq("id", tableSession.table_id);
+        .from("table_sessions")
+        .update({ status: "closed", closed_at: new Date().toISOString() })
+        .eq("id", bill.table_session_id);
+
+      if (tableSession.table_id) {
+        await admin
+          .from("restaurant_tables")
+          .update({ status: "paid" })
+          .eq("id", tableSession.table_id);
+        await admin
+          .from("restaurant_tables")
+          .update({ status: "cleaning" })
+          .eq("id", tableSession.table_id);
+      }
     }
   }
 
   revalidatePath("/staff/cashier");
+  revalidatePath("/staff/orders");
 }
 
 const UNIFIED_NEXT_STATUS: Record<string, string> = {
@@ -225,4 +243,53 @@ export async function advanceOrderStatusUnified(orderId: string) {
   }
 
   revalidatePath("/staff/orders");
+}
+
+/**
+ * Staff override: reset an abandoned or stuck table. Closes any active
+ * session and returns the table to "available". All historical orders,
+ * payments, and the session record itself are preserved.
+ */
+export async function resetTable(tableId: string) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: table } = await admin
+    .from("restaurant_tables")
+    .select("id, branches(restaurant_id)")
+    .eq("id", tableId)
+    .maybeSingle();
+
+  if (!table) return { error: "Table not found." };
+
+  const tableRestaurantId = (table.branches as unknown as { restaurant_id: string }).restaurant_id;
+  if (tableRestaurantId !== session.restaurantId) {
+    return { error: "Unauthorized." };
+  }
+
+  // Close any active session (preserves history).
+  const { data: activeSession } = await admin
+    .from("table_sessions")
+    .select("id, status")
+    .eq("table_id", tableId)
+    .in("status", ["open", "bill_requested", "payment_pending", "paid"])
+    .order("opened_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (activeSession) {
+    if (activeSession.status !== "paid") {
+      await admin.from("table_sessions").update({ status: "paid" }).eq("id", activeSession.id);
+    }
+    await admin
+      .from("table_sessions")
+      .update({ status: "closed", closed_at: new Date().toISOString() })
+      .eq("id", activeSession.id);
+  }
+
+  await admin.from("restaurant_tables").update({ status: "available" }).eq("id", tableId);
+
+  revalidatePath("/staff/orders");
+  revalidatePath("/dashboard/tables");
+  return { error: null };
 }

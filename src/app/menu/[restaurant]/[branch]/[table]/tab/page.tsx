@@ -32,12 +32,12 @@ export default async function TableTabPage(
 
   const admin = createAdminClient();
 
-  // Find the active table session (open or bill_requested).
+  // Find the active table session (open, bill_requested, payment_pending, or paid).
   const { data: session } = await admin
     .from("table_sessions")
     .select("id, status")
     .eq("table_id", table.id)
-    .in("status", ["open", "bill_requested"])
+    .in("status", ["open", "bill_requested", "payment_pending", "paid"])
     .order("opened_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -79,7 +79,11 @@ export default async function TableTabPage(
     .neq("status", "paid")
     .maybeSingle();
 
-  const billRequested = session.status === "bill_requested" || !!bill;
+  const billRequested = session.status === "bill_requested" || (!!bill && bill.status !== "paid");
+  const paymentPending = session.status === "payment_pending";
+  const billPaid = session.status === "paid";
+  const canOrder = session.status === "open" || session.status === "bill_requested";
+  const canRequestBill = session.status === "open" && !bill;
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 p-4 pb-20">
@@ -126,15 +130,23 @@ export default async function TableTabPage(
         </div>
       </div>
 
-      {billRequested && (
+      {billRequested && !paymentPending && !billPaid && (
         <p className="text-center text-sm font-medium text-brand">Bill requested</p>
+      )}
+      {paymentPending && (
+        <p className="text-center text-sm font-medium text-muted-foreground">Payment in progress…</p>
+      )}
+      {billPaid && (
+        <p className="text-center text-sm font-medium text-brand">Bill paid — thank you!</p>
       )}
 
       <div className="flex gap-3">
-        <Button asChild className="flex-1">
-          <Link href={`/menu/${restaurantSlug}/${branchSlug}/${tableId}`}>Order more</Link>
-        </Button>
-        {!billRequested && (
+        {canOrder && (
+          <Button asChild className="flex-1">
+            <Link href={`/menu/${restaurantSlug}/${branchSlug}/${tableId}`}>Order more</Link>
+          </Button>
+        )}
+        {canRequestBill && (
           <RequestBillButton
             branchId={data.branch.id}
             tableId={table.id}
