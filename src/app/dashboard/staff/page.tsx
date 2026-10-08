@@ -4,6 +4,7 @@ import { AddStaffForm } from "@/components/dashboard/add-staff-form";
 import { StaffLoginCard } from "@/components/dashboard/staff-login-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { publicAppUrl } from "@/lib/app-url";
 import { requireCurrentRestaurant } from "@/lib/restaurant";
 import { createClient } from "@/lib/supabase/server";
 
@@ -11,8 +12,7 @@ export default async function StaffPage() {
   const restaurant = await requireCurrentRestaurant();
   const supabase = await createClient();
 
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
-  const loginUrl = `${siteUrl}/staff?r=${restaurant.restaurantSlug}`;
+  const loginUrl = `${publicAppUrl()}/staff?r=${restaurant.restaurantSlug}`;
   const loginQr = await QRCode.toDataURL(loginUrl, { margin: 1, width: 220 });
 
   const [{ data: branches }, { data: staff }] = await Promise.all([
