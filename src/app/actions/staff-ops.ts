@@ -246,6 +246,156 @@ export async function advanceOrderStatusUnified(orderId: string) {
 }
 
 /**
+ * Initiates payment for a table session. Transitions the session from
+ * bill_requested to payment_pending, freezing new orders. The bill total
+ * is recalculated one final time to ensure it is stable.
+ */
+export async function initiatePayment(billId: string) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: bill } = await admin
+    .from("bills")
+    .select("id, status, table_session_id, restaurant_id")
+    .eq("id", billId)
+    .eq("restaurant_id", session.restaurantId)
+    .maybeSingle();
+
+  if (!bill || bill.status === "paid") return;
+
+  // Recalculate bill total one final time (freezes the amount).
+  const { data: orders } = await admin
+    .from("orders")
+    .select("total_amount")
+    .eq("table_session_id", bill.table_session_id)
+    .neq("status", "cancelled");
+
+  const totalAmount = (orders ?? []).reduce((sum, o) => sum + o.total_amount, 0);
+
+  await admin.from("bills").update({ total_amount: totalAmount }).eq("id", billId);
+  await admin.from("table_sessions").update({ status: "payment_pending" }).eq("id", bill.table_session_id);
+
+  const { data: tableSession } = await admin
+    .from("table_sessions")
+    .select("table_id")
+    .eq("id", bill.table_session_id)
+    .maybeSingle();
+
+  if (tableSession?.table_id) {
+    await admin.from("restaurant_tables").update({ status: "payment_pending" }).eq("id", tableSession.table_id);
+  }
+
+  revalidatePath("/staff/orders");
+}
+
+/**
+ * Confirms payment for a table session. Transitions from payment_pending
+ * to paid then closed. Records the payment with the selected method.
+ * Idempotent: if the bill is already paid, does nothing.
+ */
+export async function confirmPayment(billId: string, method: "cash" | "upi" | "card") {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: bill } = await admin
+    .from("bills")
+    .select("id, total_amount, restaurant_id, table_session_id, status")
+    .eq("id", billId)
+    .eq("restaurant_id", session.restaurantId)
+    .single();
+
+  if (!bill || bill.status === "paid") return;
+
+  await admin.from("bills").update({ status: "paid", closed_at: new Date().toISOString() }).eq("id", billId);
+
+  await admin.from("payments").insert({
+    restaurant_id: session.restaurantId,
+    bill_id: billId,
+    method,
+    status: "paid",
+    amount: bill.total_amount,
+    recorded_by_staff_id: session.staffId,
+  });
+
+  if (bill.table_session_id) {
+    // Close any open orders so they don't linger as served/ready forever.
+    const { data: openOrders } = await admin
+      .from("orders")
+      .select("id")
+      .eq("table_session_id", bill.table_session_id)
+      .not("status", "in", "(completed,cancelled)");
+
+    if (openOrders && openOrders.length > 0) {
+      const ids = openOrders.map((o) => o.id);
+      await admin.from("orders").update({ status: "completed" }).in("id", ids);
+      await admin.from("order_status_history").insert(
+        ids.map((id) => ({
+          order_id: id,
+          status: "completed",
+          changed_by_staff_id: session.staffId,
+        })),
+      );
+    }
+
+    const { data: tableSession } = await admin
+      .from("table_sessions")
+      .select("id, table_id, status")
+      .eq("id", bill.table_session_id)
+      .maybeSingle();
+
+    if (tableSession && tableSession.status !== "closed") {
+      if (tableSession.status !== "paid") {
+        await admin.from("table_sessions").update({ status: "paid" }).eq("id", bill.table_session_id);
+      }
+      await admin
+        .from("table_sessions")
+        .update({ status: "closed", closed_at: new Date().toISOString() })
+        .eq("id", bill.table_session_id);
+
+      if (tableSession.table_id) {
+        await admin.from("restaurant_tables").update({ status: "paid" }).eq("id", tableSession.table_id);
+        await admin.from("restaurant_tables").update({ status: "cleaning" }).eq("id", tableSession.table_id);
+      }
+    }
+  }
+
+  revalidatePath("/staff/orders");
+}
+
+/**
+ * Cancels payment initiation. Transitions the session from payment_pending
+ * back to bill_requested, allowing ordering to resume.
+ */
+export async function cancelPaymentInitiation(billId: string) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: bill } = await admin
+    .from("bills")
+    .select("id, status, table_session_id, restaurant_id")
+    .eq("id", billId)
+    .eq("restaurant_id", session.restaurantId)
+    .maybeSingle();
+
+  if (!bill || bill.status === "paid") return;
+
+  await admin.from("table_sessions").update({ status: "bill_requested" }).eq("id", bill.table_session_id);
+
+  const { data: tableSession } = await admin
+    .from("table_sessions")
+    .select("table_id")
+    .eq("id", bill.table_session_id)
+    .maybeSingle();
+
+  if (tableSession?.table_id) {
+    await admin.from("restaurant_tables").update({ status: "bill_requested" }).eq("id", tableSession.table_id);
+  }
+
+  revalidatePath("/staff/orders");
+}
+
+
+/**
  * Staff override: reset an abandoned or stuck table. Closes any active
  * session and returns the table to "available". All historical orders,
  * payments, and the session record itself are preserved.
