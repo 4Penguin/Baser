@@ -32,17 +32,17 @@ export default async function TableTabPage(
 
   const admin = createAdminClient();
 
-  // Find the active table session (open, bill_requested, payment_pending, or paid).
-  const { data: session } = await admin
+  // Find the most recent session for this table (any status).
+  const { data: recentSession } = await admin
     .from("table_sessions")
     .select("id, status")
     .eq("table_id", table.id)
-    .in("status", ["open", "bill_requested", "payment_pending", "paid"])
     .order("opened_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (!session) {
+  // No session ever existed for this table.
+  if (!recentSession) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4 p-4 pt-10 text-center">
         <h1 className="text-2xl font-semibold">Table {table.label}</h1>
@@ -54,7 +54,31 @@ export default async function TableTabPage(
     );
   }
 
-  // Fetch all orders for this session (including cancelled for display).
+  // Most recent session is closed or paid — show thank-you screen.
+  if (recentSession.status === "closed" || recentSession.status === "paid") {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col items-center gap-4 p-4 pt-20 text-center">
+        {data.restaurant.logo_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={data.restaurant.logo_url}
+            alt={data.restaurant.name}
+            className="size-16 rounded-full border-2 border-background object-cover shadow-sm"
+          />
+        ) : (
+          <div className="flex size-16 items-center justify-center rounded-full border-2 border-background bg-brand text-xl font-semibold text-brand-foreground shadow-sm">
+            {data.restaurant.name.slice(0, 1)}
+          </div>
+        )}
+        <h1 className="text-2xl font-semibold">Thank you for visiting {data.restaurant.name}</h1>
+        <p className="text-muted-foreground">Your table session has been completed.</p>
+      </div>
+    );
+  }
+
+  // Active session — show normal tab view.
+  const session = recentSession;
+
   const { data: orders } = await admin
     .from("orders")
     .select(
@@ -66,12 +90,10 @@ export default async function TableTabPage(
 
   const allOrders = orders ?? [];
 
-  // Running total: sum of non-cancelled order totals (same logic as raiseBillForTable).
   const runningTotal = allOrders
     .filter((o) => o.status !== "cancelled")
     .reduce((sum, o) => sum + o.total_amount, 0);
 
-  // Check for existing non-paid bill.
   const { data: bill } = await admin
     .from("bills")
     .select("id, status")
@@ -81,7 +103,6 @@ export default async function TableTabPage(
 
   const billRequested = session.status === "bill_requested" || (!!bill && bill.status !== "paid");
   const paymentPending = session.status === "payment_pending";
-  const billPaid = session.status === "paid";
   const canOrder = session.status === "open" || session.status === "bill_requested";
   const canRequestBill = session.status === "open" && !bill;
 
@@ -130,14 +151,11 @@ export default async function TableTabPage(
         </div>
       </div>
 
-      {billRequested && !paymentPending && !billPaid && (
+      {billRequested && !paymentPending && (
         <p className="text-center text-sm font-medium text-brand">Bill requested</p>
       )}
       {paymentPending && (
         <p className="text-center text-sm font-medium text-muted-foreground">Payment in progress…</p>
-      )}
-      {billPaid && (
-        <p className="text-center text-sm font-medium text-brand">Bill paid — thank you!</p>
       )}
 
       <div className="flex gap-3">
