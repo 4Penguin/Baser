@@ -206,7 +206,9 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       .from("table_sessions")
       .select("id")
       .eq("table_id", tableId)
-      .eq("status", "open")
+      .in("status", ["open", "bill_requested"])
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     tableSessionId = openSession?.id ?? null;

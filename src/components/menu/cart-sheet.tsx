@@ -48,7 +48,11 @@ export function CartSheet({ open, onOpenChange }: { open: boolean; onOpenChange:
 
       clear();
       onOpenChange(false);
-      router.push(`/menu/${params.restaurant}/${params.branch}/order/${result.orderId}`);
+      if (params.table) {
+        router.push(`/menu/${params.restaurant}/${params.branch}/${params.table}/tab`);
+      } else {
+        router.push(`/menu/${params.restaurant}/${params.branch}/order/${result.orderId}`);
+      }
     });
   }
 
