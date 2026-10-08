@@ -22,6 +22,12 @@ export default async function UnifiedOrdersPage() {
   const session = await requireOperationalStaffSession();
   const admin = createAdminClient();
 
+  const { data: restaurant } = await admin
+    .from("restaurants")
+    .select("name")
+    .eq("id", session.restaurantId)
+    .maybeSingle();
+
   let tableQuery = admin
     .from("restaurant_tables")
     .select("id, label, branches!inner(id, restaurant_id)")
@@ -78,8 +84,8 @@ export default async function UnifiedOrdersPage() {
       <AutoRefresh intervalMs={4000} />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Orders</h1>
-          <p className="text-muted-foreground">{session.name}</p>
+          <h1 className="text-2xl font-semibold">{restaurant?.name ?? "Staff Console"}</h1>
+          <p className="text-muted-foreground">Welcome, {session.name}</p>
         </div>
         <form action={staffLogout}>
           <Button type="submit" variant="outline">Sign out</Button>
