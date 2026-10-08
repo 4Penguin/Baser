@@ -1,23 +1,27 @@
 import { AutoRefresh } from "@/components/auto-refresh";
 import { TableSessionCard } from "@/components/staff/table-session-card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOperationalStaffSession } from "@/lib/staff-session";
 import { staffLogout } from "@/app/actions/staff-auth";
 
-const URGENCY: Record<string, number> = {
-  payment_pending: 0,
-  bill_requested: 1,
-  open: 2,
-};
+const NEW_STATUSES = ["pending", "accepted", "preparing"];
 
-const KITCHEN_ACTIVE = ["pending", "preparing", "ready"];
+function getPriority(status: string, orders: { status: string }[]): number {
+  const hasNew = orders.some((o) => NEW_STATUSES.includes(o.status));
+  const hasReady = orders.some((o) => o.status === "ready");
+  const readyToPay = ["bill_requested", "payment_pending"].includes(status);
+  if (readyToPay) return 0;
+  if (hasNew) return 1;
+  if (hasReady) return 2;
+  return 3;
+}
 
 export default async function UnifiedOrdersPage() {
   const session = await requireOperationalStaffSession();
   const admin = createAdminClient();
 
-  // Get tables for this restaurant (and branch if specified).
   let tableQuery = admin
     .from("restaurant_tables")
     .select("id, label, branches!inner(id, restaurant_id)")
@@ -49,7 +53,6 @@ export default async function UnifiedOrdersPage() {
     );
   }
 
-  // Fetch active table sessions with their orders and bills.
   const { data: sessions } = await admin
     .from("table_sessions")
     .select(
@@ -61,15 +64,14 @@ export default async function UnifiedOrdersPage() {
     .in("status", ["open", "bill_requested", "payment_pending"])
     .order("opened_at", { ascending: false });
 
-  // Sort by urgency: payment_pending > bill_requested > has active kitchen work
   const sortedSessions = (sessions ?? []).sort((a, b) => {
-    const aUrgency = URGENCY[a.status] ?? 3;
-    const bUrgency = URGENCY[b.status] ?? 3;
-    if (aUrgency !== bUrgency) return aUrgency - bUrgency;
-    const aActive = (a.orders ?? []).filter((o: { status: string }) => KITCHEN_ACTIVE.includes(o.status)).length;
-    const bActive = (b.orders ?? []).filter((o: { status: string }) => KITCHEN_ACTIVE.includes(o.status)).length;
-    return bActive - aActive;
+    const aPriority = getPriority(a.status, a.orders ?? []);
+    const bPriority = getPriority(b.status, b.orders ?? []);
+    return aPriority - bPriority;
   });
+
+  const activeTableIds = new Set((sessions ?? []).map((s) => s.table_id));
+  const availableTables = (tables ?? []).filter((t) => !activeTableIds.has(t.id));
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-muted/20 p-4 sm:p-6">
@@ -85,31 +87,52 @@ export default async function UnifiedOrdersPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {sortedSessions.map((s) => (
-          <TableSessionCard
-            key={s.id}
-            session={{
-              id: s.id,
-              status: s.status,
-              tableLabel: tableMap.get(s.table_id) ?? "—",
-              orders: (s.orders ?? []).map((o) => ({
-                id: o.id,
-                order_number: o.order_number,
-                status: o.status,
-                total_amount: o.total_amount,
-                created_at: o.created_at,
-                order_items: o.order_items,
-              })),
-              bill: (s.bills ?? []).find((b) => b.status !== "paid") ?? null,
-            }}
-          />
-        ))}
+        {sortedSessions.map((s) => {
+          const allOrders = (s.orders ?? []).filter((o) => o.status !== "cancelled");
+          const runningTotal = allOrders.reduce((sum, o) => sum + o.total_amount, 0);
+          return (
+            <TableSessionCard
+              key={s.id}
+              session={{
+                id: s.id,
+                status: s.status,
+                tableLabel: tableMap.get(s.table_id) ?? "—",
+                openedAt: s.opened_at,
+                rounds: allOrders.map((o) => ({
+                  id: o.id,
+                  order_number: o.order_number,
+                  status: o.status,
+                  created_at: o.created_at,
+                  order_items: o.order_items,
+                })),
+                runningTotal,
+                bill: (s.bills ?? []).find((b) => b.status !== "paid") ?? null,
+              }}
+            />
+          );
+        })}
         {sortedSessions.length === 0 && (
           <p className="text-sm text-muted-foreground">
             No active tables. New orders will appear here instantly.
           </p>
         )}
       </div>
+
+      {availableTables.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            Available tables ({availableTables.length})
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {availableTables.map((t) => (
+              <div key={t.id} className="flex items-center justify-between rounded-md border bg-card p-3 text-sm">
+                <span className="font-medium">Table {t.label}</span>
+                <Badge variant="outline">Available</Badge>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
