@@ -2,7 +2,7 @@ import QRCode from "qrcode";
 
 import { AddStaffForm } from "@/components/dashboard/add-staff-form";
 import { StaffLoginCard } from "@/components/dashboard/staff-login-card";
-import { Badge } from "@/components/ui/badge";
+import { StaffMemberCard } from "@/components/dashboard/staff-member-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { publicAppUrl } from "@/lib/app-url";
 import { requireCurrentRestaurant } from "@/lib/restaurant";
@@ -28,7 +28,9 @@ export default async function StaffPage() {
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold">Staff</h1>
-        <p className="text-muted-foreground">Waiters, kitchen and cashier accounts sign in with a role + PIN.</p>
+        <p className="text-muted-foreground">
+          Staff members sign in with their name and a 4-digit PIN.
+        </p>
       </div>
 
       <Card>
@@ -47,10 +49,11 @@ export default async function StaffPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Add staff</CardTitle>
+          <CardTitle className="text-base">Add staff member</CardTitle>
           <CardDescription>
-            Floor roles only. Managers need the full dashboard, which a PIN sign-in can&apos;t
-            reach — give them an owner/manager account instead.
+            Staff can operate the entire restaurant from one console. Managers need
+            the full dashboard, which a PIN sign-in can&apos;t reach — give them an
+            owner/manager account instead.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -64,24 +67,21 @@ export default async function StaffPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Team</CardTitle>
+          <CardTitle className="text-base">Staff Members</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
           {(staff ?? []).map((member) => (
-            <div key={member.id} className="flex items-center justify-between border-b py-2 last:border-0">
-              <div>
-                <p className="font-medium">{member.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {(member.branches as unknown as { name: string } | null)?.name}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="capitalize">
-                  {member.role}
-                </Badge>
-                {!member.is_active && <Badge variant="destructive">Inactive</Badge>}
-              </div>
-            </div>
+            <StaffMemberCard
+              key={member.id}
+              member={{
+                id: member.id,
+                name: member.name,
+                role: member.role,
+                is_active: member.is_active,
+                branchName:
+                  (member.branches as unknown as { name: string } | null)?.name ?? null,
+              }}
+            />
           ))}
           {(!staff || staff.length === 0) && (
             <p className="text-sm text-muted-foreground">No staff added yet.</p>
