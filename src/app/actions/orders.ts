@@ -18,7 +18,6 @@ export type PlaceOrderInput = {
   couponCode?: string;
   customerName?: string;
   customerPhone?: string;
-  idempotencyKey?: string;
 };
 
 export type PlaceOrderResult = { orderId: string; orderNumber: number } | { error: string };
@@ -38,19 +37,6 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
   }
 
   const admin = createAdminClient();
-
-  // Idempotency: if the same key was already used, return the existing order
-  // instead of creating a duplicate (double-tap, retry, page refresh).
-  if (input.idempotencyKey) {
-    const { data: existing } = await admin
-      .from("orders")
-      .select("id, order_number")
-      .eq("idempotency_key", input.idempotencyKey)
-      .maybeSingle();
-    if (existing) {
-      return { orderId: existing.id, orderNumber: existing.order_number };
-    }
-  }
 
   const { data: restaurant } = await admin
     .from("restaurants")
@@ -78,17 +64,11 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
   if (input.tableId) {
     const { data: table } = await admin
       .from("restaurant_tables")
-      .select("id, status")
+      .select("id")
       .eq("id", input.tableId)
       .eq("branch_id", branch.id)
       .maybeSingle();
     if (!table) return { error: "Table not found." };
-    if (["cleaning", "paid"].includes(table.status)) {
-      return { error: "This table session has been completed." };
-    }
-    if (table.status === "payment_pending") {
-      return { error: "Payment is in progress for this table." };
-    }
     tableId = table.id;
   }
 
@@ -187,7 +167,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
     if (!offer || !offer.is_active) return { error: "This coupon's offer is no longer active." };
     if (offer.min_order_value && subtotal < offer.min_order_value) {
-      return { error: `Minimum order value for this coupon is ₹${offer.min_order_value}.` };
+      return { error: `Minimum order value for this coupon is \₹${offer.min_order_value}.` };
     }
 
     if (offer.type === "percentage" && offer.percentage_value) {
@@ -222,49 +202,26 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
   let tableSessionId: string | null = null;
   if (tableId) {
+    // Look for an existing open OR bill_requested session. Previously this
+    // only matched "open", so a customer who requested the bill and then
+    // placed another order would get a brand-new session — splitting their
+    // table's orders across two sessions and breaking the bill total.
     const { data: activeSession } = await admin
       .from("table_sessions")
-      .select("id, status")
+      .select("id")
       .eq("table_id", tableId)
       .in("status", ["open", "bill_requested"])
-      .order("opened_at", { ascending: false })
-      .limit(1)
       .maybeSingle();
 
-    if (activeSession) {
-      tableSessionId = activeSession.id;
-    } else {
-      // Try to create — may fail if a concurrent request created one
-      // (unique partial index enforces one active session per table).
-      const { data: newSession, error: sessionError } = await admin
+    tableSessionId = activeSession?.id ?? null;
+
+    if (!tableSessionId) {
+      const { data: newSession } = await admin
         .from("table_sessions")
         .insert({ table_id: tableId })
         .select("id")
         .single();
-
-      if (newSession) {
-        tableSessionId = newSession.id;
-      } else if (sessionError) {
-        // Retry with a broader filter to find the session another request
-        // created. If it is payment_pending or paid, reject the order.
-        const { data: retrySession } = await admin
-          .from("table_sessions")
-          .select("id, status")
-          .eq("table_id", tableId)
-          .in("status", ["open", "bill_requested", "payment_pending", "paid"])
-          .order("opened_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (retrySession && ["open", "bill_requested"].includes(retrySession.status)) {
-          tableSessionId = retrySession.id;
-        } else if (retrySession) {
-          if (retrySession.status === "payment_pending") {
-            return { error: "Payment is in progress for this table." };
-          }
-          return { error: "This table session has been completed." };
-        }
-      }
+      tableSessionId = newSession?.id ?? null;
     }
   }
 
@@ -281,7 +238,6 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       tax_amount: taxAmount,
       service_charge_amount: serviceChargeAmount,
       total_amount: totalAmount,
-      idempotency_key: input.idempotencyKey ?? null,
     })
     .select("id, order_number")
     .single();
@@ -311,42 +267,20 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
   await admin.from("order_status_history").insert({ order_id: order.id, status: "pending" });
 
   if (tableId) {
-    await admin.from("restaurant_tables").update({ status: "order_pending" }).eq("id", tableId);
+    // Only move the table to "order_pending" if it is currently "available".
+    // Previously this was an unconditional update, which would regress a
+    // table from "occupied" or "bill_requested" back to "order_pending",
+    // hiding the fact that guests are already seated or have asked for the
+    // bill.
+    await admin
+      .from("restaurant_tables")
+      .update({ status: "order_pending" })
+      .eq("id", tableId)
+      .eq("status", "available");
   }
 
   if (couponId) {
     await admin.rpc("increment_coupon_usage", { p_coupon_id: couponId });
-  }
-
-  // If the session is bill_requested, update the bill total to include
-  // the new order (the customer ordered more after requesting the bill).
-  if (tableSessionId) {
-    const { data: sessionRow } = await admin
-      .from("table_sessions")
-      .select("status")
-      .eq("id", tableSessionId)
-      .maybeSingle();
-
-    if (sessionRow?.status === "bill_requested") {
-      const { data: allOrders } = await admin
-        .from("orders")
-        .select("total_amount")
-        .eq("table_session_id", tableSessionId)
-        .neq("status", "cancelled");
-
-      const newTotal = (allOrders ?? []).reduce((sum, o) => sum + o.total_amount, 0);
-
-      const { data: existingBill } = await admin
-        .from("bills")
-        .select("id")
-        .eq("table_session_id", tableSessionId)
-        .neq("status", "paid")
-        .maybeSingle();
-
-      if (existingBill) {
-        await admin.from("bills").update({ total_amount: newTotal }).eq("id", existingBill.id);
-      }
-    }
   }
 
   return { orderId: order.id, orderNumber: order.order_number };

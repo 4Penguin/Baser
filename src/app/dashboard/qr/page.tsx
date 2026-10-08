@@ -1,9 +1,12 @@
 import QRCode from "qrcode";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { publicAppUrl } from "@/lib/app-url";
 import { requireCurrentRestaurant } from "@/lib/restaurant";
 import { createClient } from "@/lib/supabase/server";
+
+function siteUrl() {
+  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+}
 
 export default async function QrPage() {
   const restaurant = await requireCurrentRestaurant();
@@ -16,12 +19,12 @@ export default async function QrPage() {
 
   const branchCards = await Promise.all(
     (branches ?? []).map(async (branch) => {
-      const generalUrl = `${publicAppUrl()}/menu/${restaurant.restaurantSlug}/${branch.slug}`;
+      const generalUrl = `${siteUrl()}/menu/${restaurant.restaurantSlug}/${branch.slug}`;
       const generalQr = await QRCode.toDataURL(generalUrl, { margin: 1, width: 160 });
 
       const tableQrs = await Promise.all(
         branch.restaurant_tables.map(async (table) => {
-          const url = `${publicAppUrl()}/menu/${restaurant.restaurantSlug}/${branch.slug}/${table.id}`;
+          const url = `${siteUrl()}/menu/${restaurant.restaurantSlug}/${branch.slug}/${table.id}`;
           const dataUrl = await QRCode.toDataURL(url, { margin: 1, width: 160 });
           return { id: table.id, label: table.label, url, dataUrl };
         }),
