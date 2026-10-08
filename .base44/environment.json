@@ -1,0 +1,31 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_URL",
+      "description": "Your Supabase project URL from Settings > API (e.g. https://xxxxx.supabase.co)",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    },
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "description": "Supabase anon/publishable key from Settings > API",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    },
+    {
+      "name": "SUPABASE_SERVICE_ROLE_KEY",
+      "description": "Supabase service role key from Settings > API (server-only, never expose to browser)",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    },
+    {
+      "name": "STAFF_SESSION_SECRET",
+      "description": "Random secret signing staff PIN-login cookies (openssl rand -base64 32)",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    }
+  ]
+}
