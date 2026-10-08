@@ -81,18 +81,32 @@ export async function staffLogin(
     return { error: "That PIN doesn't match. Try again or ask your manager." };
   }
 
-  const cookieStore = await cookies();
-  cookieStore.set(
-    STAFF_SESSION_COOKIE,
-    signStaffSession({
+  let sessionToken: string;
+  try {
+    sessionToken = signStaffSession({
       staffId: match.id,
       restaurantId: restaurant.id,
       branchId: match.branch_id,
       role: role as "waiter" | "kitchen" | "cashier",
       name: match.name,
-    }),
-    { httpOnly: true, sameSite: "lax", secure: true, path: "/", maxAge: 60 * 60 * 12 },
-  );
+    });
+  } catch {
+    // signStaffSession throws when STAFF_SESSION_SECRET is not configured.
+    // Surface a safe, generic message instead of letting the error crash the
+    // page — the owner still needs to set the secret for sign-in to work.
+    return {
+      error: "Staff sign-in isn't available right now. Please ask your manager to contact support.",
+    };
+  }
+
+  const cookieStore = await cookies();
+  cookieStore.set(STAFF_SESSION_COOKIE, sessionToken, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    maxAge: 60 * 60 * 12,
+  });
 
   redirect(ROLE_HOME[role]);
 }
