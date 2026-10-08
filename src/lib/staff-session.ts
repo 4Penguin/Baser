@@ -6,7 +6,7 @@ export type StaffSession = {
   staffId: string;
   restaurantId: string;
   branchId: string | null;
-  role: "owner" | "manager" | "waiter" | "kitchen" | "cashier";
+  role: "owner" | "manager" | "waiter" | "kitchen" | "cashier" | "staff";
   name: string;
 };
 
@@ -54,6 +54,23 @@ export async function requireStaffSession(
   const session = verifyStaffSession(cookieStore.get(STAFF_SESSION_COOKIE)?.value);
 
   if (!session || session.role !== expectedRole) {
+    redirect("/staff");
+  }
+
+  return session;
+}
+
+/**
+ * Requires a unified operational staff session (role "staff"). The unified
+ * Orders screen lets one person advance an order through its whole lifecycle
+ * (New → Preparing → Ready → Served) without separate kitchen/waiter/cashier
+ * logins.
+ */
+export async function requireOperationalStaffSession(): Promise<StaffSession> {
+  const cookieStore = await cookies();
+  const session = verifyStaffSession(cookieStore.get(STAFF_SESSION_COOKIE)?.value);
+
+  if (!session || session.role !== "staff") {
     redirect("/staff");
   }
 

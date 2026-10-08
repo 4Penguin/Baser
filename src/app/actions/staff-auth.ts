@@ -13,6 +13,7 @@ const ROLE_HOME: Record<string, string> = {
   waiter: "/staff/waiter",
   kitchen: "/staff/kitchen",
   cashier: "/staff/cashier",
+  staff: "/staff/orders",
 };
 
 /**
@@ -87,7 +88,7 @@ export async function staffLogin(
       staffId: match.id,
       restaurantId: restaurant.id,
       branchId: match.branch_id,
-      role: role as "waiter" | "kitchen" | "cashier",
+      role: role as "waiter" | "kitchen" | "cashier" | "staff",
       name: match.name,
     });
   } catch {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState, useTransition } from "react";
-import { ChefHat, Delete, HandPlatter, Loader2, Wallet } from "lucide-react";
+import { ChefHat, ClipboardList, Delete, HandPlatter, Loader2, Wallet } from "lucide-react";
 
 import { lookupRestaurant, staffLogin } from "@/app/actions/staff-auth";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
 const ROLES = [
+  { value: "staff", label: "Staff", icon: ClipboardList },
   { value: "waiter", label: "Waiter", icon: HandPlatter },
   { value: "kitchen", label: "Kitchen", icon: ChefHat },
   { value: "cashier", label: "Cashier", icon: Wallet },
@@ -160,7 +161,7 @@ export function StaffLoginForm({ defaultRestaurantSlug }: { defaultRestaurantSlu
           <input type="hidden" name="role" value={role ?? ""} />
           <input type="hidden" name="pin" value={pin} />
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {ROLES.map(({ value, label, icon: Icon }) => (
               <button
                 key={value}

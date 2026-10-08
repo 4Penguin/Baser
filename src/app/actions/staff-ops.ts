@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireStaffSession } from "@/lib/staff-session";
+import { requireOperationalStaffSession, requireStaffSession } from "@/lib/staff-session";
 
 const KITCHEN_NEXT_STATUS: Record<string, string> = {
   pending: "accepted",
@@ -167,4 +167,62 @@ export async function markBillPaid(billId: string, method: "cash" | "upi" | "car
   }
 
   revalidatePath("/staff/cashier");
+}
+
+const UNIFIED_NEXT_STATUS: Record<string, string> = {
+  pending: "preparing",
+  preparing: "ready",
+  ready: "served",
+};
+
+/**
+ * Unified operational staff advance an order through its whole lifecycle on
+ * one screen: New (pending) → Preparing → Ready → Served.
+ *
+ * One PIN login (role "staff") replaces the separate kitchen/waiter/cashier
+ * sign-ins. The table session is NOT closed when an order is served — only
+ * payment closes a session, so customers can place further order rounds.
+ */
+export async function advanceOrderStatusUnified(orderId: string) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: order } = await admin
+    .from("orders")
+    .select("id, status, restaurant_id, table_session_id")
+    .eq("id", orderId)
+    .eq("restaurant_id", session.restaurantId)
+    .single();
+
+  if (!order) return;
+
+  const nextStatus = UNIFIED_NEXT_STATUS[order.status];
+  if (!nextStatus) return;
+
+  await admin.from("orders").update({ status: nextStatus }).eq("id", orderId);
+  await admin.from("order_status_history").insert({
+    order_id: orderId,
+    status: nextStatus,
+    changed_by_staff_id: session.staffId,
+  });
+
+  // Reflect a served order on the floor plan: the table is occupied and
+  // eating. The table session stays OPEN so customers can order again —
+  // only markBillPaid (payment) closes a session.
+  if (nextStatus === "served" && order.table_session_id) {
+    const { data: tableSession } = await admin
+      .from("table_sessions")
+      .select("table_id, status")
+      .eq("id", order.table_session_id)
+      .maybeSingle();
+
+    if (tableSession?.table_id && tableSession.status === "open") {
+      await admin
+        .from("restaurant_tables")
+        .update({ status: "occupied" })
+        .eq("id", tableSession.table_id);
+    }
+  }
+
+  revalidatePath("/staff/orders");
 }

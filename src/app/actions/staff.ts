@@ -17,7 +17,7 @@ export type StaffActionState = { error: string | null };
  * here would create accounts that can be made but never signed into. Managers
  * get a real email/password account instead.
  */
-const VALID_ROLES = ["waiter", "kitchen", "cashier"];
+const VALID_ROLES = ["waiter", "kitchen", "cashier", "staff"];
 
 export async function addStaff(
   _prevState: StaffActionState,
