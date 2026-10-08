@@ -83,8 +83,11 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       .eq("branch_id", branch.id)
       .maybeSingle();
     if (!table) return { error: "Table not found." };
-    if (["cleaning", "payment_pending", "paid"].includes(table.status)) {
-      return { error: "This table is not accepting orders right now." };
+    if (["cleaning", "paid"].includes(table.status)) {
+      return { error: "This table session has been completed." };
+    }
+    if (table.status === "payment_pending") {
+      return { error: "Payment is in progress for this table." };
     }
     tableId = table.id;
   }
@@ -256,7 +259,10 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
         if (retrySession && ["open", "bill_requested"].includes(retrySession.status)) {
           tableSessionId = retrySession.id;
         } else if (retrySession) {
-          return { error: "This table is not accepting orders right now." };
+          if (retrySession.status === "payment_pending") {
+            return { error: "Payment is in progress for this table." };
+          }
+          return { error: "This table session has been completed." };
         }
       }
     }
@@ -310,6 +316,37 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
   if (couponId) {
     await admin.rpc("increment_coupon_usage", { p_coupon_id: couponId });
+  }
+
+  // If the session is bill_requested, update the bill total to include
+  // the new order (the customer ordered more after requesting the bill).
+  if (tableSessionId) {
+    const { data: sessionRow } = await admin
+      .from("table_sessions")
+      .select("status")
+      .eq("id", tableSessionId)
+      .maybeSingle();
+
+    if (sessionRow?.status === "bill_requested") {
+      const { data: allOrders } = await admin
+        .from("orders")
+        .select("total_amount")
+        .eq("table_session_id", tableSessionId)
+        .neq("status", "cancelled");
+
+      const newTotal = (allOrders ?? []).reduce((sum, o) => sum + o.total_amount, 0);
+
+      const { data: existingBill } = await admin
+        .from("bills")
+        .select("id")
+        .eq("table_session_id", tableSessionId)
+        .neq("status", "paid")
+        .maybeSingle();
+
+      if (existingBill) {
+        await admin.from("bills").update({ total_amount: newTotal }).eq("id", existingBill.id);
+      }
+    }
   }
 
   return { orderId: order.id, orderNumber: order.order_number };
