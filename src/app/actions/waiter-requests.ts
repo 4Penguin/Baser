@@ -47,7 +47,7 @@ async function raiseBillForTable(
     .select("id")
     .eq("table_id", tableId)
     .in("status", ["open", "bill_requested"])
-    .order("created_at", { ascending: false })
+    .order("opened_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 

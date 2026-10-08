@@ -38,7 +38,7 @@ export default async function TableTabPage(
     .select("id, status")
     .eq("table_id", table.id)
     .in("status", ["open", "bill_requested"])
-    .order("created_at", { ascending: false })
+    .order("opened_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
