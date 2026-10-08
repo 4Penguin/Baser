@@ -395,6 +395,195 @@ export async function cancelPaymentInitiation(billId: string) {
 }
 
 
+
+/**
+ * Marks an order as ready. Transitions from pending/accepted/preparing to
+ * ready in a single action, simplifying the staff workflow (NEW -> READY).
+ */
+export async function markOrderReady(orderId: string) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: order } = await admin
+    .from("orders")
+    .select("id, status, restaurant_id, table_session_id")
+    .eq("id", orderId)
+    .eq("restaurant_id", session.restaurantId)
+    .maybeSingle();
+
+  if (!order || !["pending", "accepted", "preparing"].includes(order.status)) return;
+
+  await admin.from("orders").update({ status: "ready" }).eq("id", orderId);
+  await admin.from("order_status_history").insert({
+    order_id: orderId,
+    status: "ready",
+    changed_by_staff_id: session.staffId,
+  });
+
+  if (order.table_session_id) {
+    const { data: tableSession } = await admin
+      .from("table_sessions")
+      .select("table_id, status")
+      .eq("id", order.table_session_id)
+      .maybeSingle();
+
+    if (tableSession?.table_id && ["open", "bill_requested"].includes(tableSession.status)) {
+      const { data: stillActive } = await admin
+        .from("orders")
+        .select("id")
+        .eq("table_session_id", order.table_session_id)
+        .in("status", ["pending", "accepted", "preparing"])
+        .limit(1)
+        .maybeSingle();
+
+      await admin
+        .from("restaurant_tables")
+        .update({ status: stillActive ? "preparing" : "ready" })
+        .eq("id", tableSession.table_id);
+    }
+  }
+
+  revalidatePath("/staff/orders");
+}
+
+/**
+ * Marks an order as served. Transitions ready -> served.
+ */
+export async function markOrderServed(orderId: string) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: order } = await admin
+    .from("orders")
+    .select("id, status, restaurant_id, table_session_id")
+    .eq("id", orderId)
+    .eq("restaurant_id", session.restaurantId)
+    .maybeSingle();
+
+  if (!order || order.status !== "ready") return;
+
+  await admin.from("orders").update({ status: "served" }).eq("id", orderId);
+  await admin.from("order_status_history").insert({
+    order_id: orderId,
+    status: "served",
+    changed_by_staff_id: session.staffId,
+  });
+
+  if (order.table_session_id) {
+    const { data: tableSession } = await admin
+      .from("table_sessions")
+      .select("table_id, status")
+      .eq("id", order.table_session_id)
+      .maybeSingle();
+
+    if (tableSession?.table_id && ["open", "bill_requested"].includes(tableSession.status)) {
+      const { data: stillReady } = await admin
+        .from("orders")
+        .select("id")
+        .eq("table_session_id", order.table_session_id)
+        .eq("status", "ready")
+        .limit(1)
+        .maybeSingle();
+
+      const { data: stillActive } = await admin
+        .from("orders")
+        .select("id")
+        .eq("table_session_id", order.table_session_id)
+        .in("status", ["pending", "accepted", "preparing"])
+        .limit(1)
+        .maybeSingle();
+
+      let tableStatus = "occupied";
+      if (stillReady) tableStatus = "ready";
+      else if (stillActive) tableStatus = "preparing";
+
+      await admin.from("restaurant_tables").update({ status: tableStatus }).eq("id", tableSession.table_id);
+    }
+  }
+
+  revalidatePath("/staff/orders");
+}
+
+/**
+ * Closes a table session. Used by staff to close a tab after payment is
+ * handled externally or to clear a tab without payment.
+ * - "external": records a cash payment and marks the bill as paid
+ * - "unpaid": closes the session without recording a payment
+ * Both options close any open orders, close the session, and make the
+ * table available for the next guests.
+ */
+export async function closeTableSession(
+  sessionId: string,
+  resolution: "external" | "unpaid",
+) {
+  const session = await requireOperationalStaffSession();
+  const admin = createAdminClient();
+
+  const { data: tableSession } = await admin
+    .from("table_sessions")
+    .select("id, status, table_id, restaurant_id")
+    .eq("id", sessionId)
+    .eq("restaurant_id", session.restaurantId)
+    .maybeSingle();
+
+  if (!tableSession) return { error: "Session not found." };
+  if (tableSession.status === "closed") return { error: null };
+
+  if (resolution === "external") {
+    const { data: bill } = await admin
+      .from("bills")
+      .select("id, total_amount, status")
+      .eq("table_session_id", sessionId)
+      .neq("status", "paid")
+      .maybeSingle();
+
+    if (bill) {
+      await admin.from("bills").update({ status: "paid", closed_at: new Date().toISOString() }).eq("id", bill.id);
+      await admin.from("payments").insert({
+        restaurant_id: session.restaurantId,
+        bill_id: bill.id,
+        method: "cash",
+        status: "paid",
+        amount: bill.total_amount,
+        recorded_by_staff_id: session.staffId,
+      });
+    }
+  }
+
+  const { data: openOrders } = await admin
+    .from("orders")
+    .select("id")
+    .eq("table_session_id", sessionId)
+    .in("status", ["pending", "accepted", "preparing", "ready"]);
+
+  if (openOrders && openOrders.length > 0) {
+    const ids = openOrders.map((o) => o.id);
+    await admin.from("orders").update({ status: "completed" }).in("id", ids);
+    await admin.from("order_status_history").insert(
+      ids.map((id) => ({
+        order_id: id,
+        status: "completed",
+        changed_by_staff_id: session.staffId,
+      })),
+    );
+  }
+
+  if (tableSession.status !== "paid") {
+    await admin.from("table_sessions").update({ status: "paid" }).eq("id", sessionId);
+  }
+  await admin
+    .from("table_sessions")
+    .update({ status: "closed", closed_at: new Date().toISOString() })
+    .eq("id", sessionId);
+
+  if (tableSession.table_id) {
+    await admin.from("restaurant_tables").update({ status: "available" }).eq("id", tableSession.table_id);
+  }
+
+  revalidatePath("/staff/orders");
+  return { error: null };
+}
+
 /**
  * Staff override: reset an abandoned or stuck table. Closes any active
  * session and returns the table to "available". All historical orders,
