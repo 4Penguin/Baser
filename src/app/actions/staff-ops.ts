@@ -580,6 +580,14 @@ export async function closeTableSession(
     await admin.from("restaurant_tables").update({ status: "available" }).eq("id", tableSession.table_id);
   }
 
+  // Record staff action for audit
+  await admin.from("staff_action_log").insert({
+    staff_id: session.staffId,
+    restaurant_id: session.restaurantId,
+    table_session_id: sessionId,
+    action: resolution === "external" ? "external_payment_recorded" : "tab_closed_unpaid",
+  });
+
   revalidatePath("/staff/orders");
   return { error: null };
 }
